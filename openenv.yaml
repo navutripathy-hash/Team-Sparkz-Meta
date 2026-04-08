@@ -1,0 +1,223 @@
+# openenv.yaml — AuditRepairEnv++ OpenEnv Specification
+# =====================================================
+# Validated by: openenv validate
+# Submit to:    HuggingFace Spaces tagged with 'openenv'
+
+name: AuditRepairEnv++
+version: "1.0.0"
+description: >
+  RL environment for cost-constrained iterative ledger repair with hidden
+  dependency propagation. A financial ledger contains inconsistencies where
+  errors are interdependent. Fixing one entry may introduce new errors in
+  dependent entries. The agent must maximize ledger correctness while
+  minimizing repair cost and avoiding overcorrection, all under a limited budget.
+
+domain: financial-auditing
+real_world: false
+tags:
+  - ledger-repair
+  - dependency-propagation
+  - cost-constrained
+  - reinforcement-learning
+  - openenv
+
+# ──────────────────────────────────────────────
+# Endpoints
+# ──────────────────────────────────────────────
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+    body:
+      task_id:
+        type: string
+        required: false
+        default: easy
+        enum:
+          - easy
+          - medium
+          - hard
+  step:
+    method: POST
+    path: /step
+    body:
+      message:
+        type: string
+        required: true
+        description: >
+          Agent's action as free-form text. Expected formats:
+          FIX_ENTRY <id>, ADJUST_ENTRY <id> <delta>,
+          REVERT_ENTRY <id>, NO_OP
+  state:
+    method: GET
+    path: /state
+
+# ──────────────────────────────────────────────
+# Action space
+# ──────────────────────────────────────────────
+action_space:
+  type: text
+  description: >
+    Free-form text string containing the agent's repair action.
+    The server parses the message to extract the action type and parameters.
+    Supported actions: FIX_ENTRY <id>, ADJUST_ENTRY <id> <delta>,
+    REVERT_ENTRY <id>, NO_OP.
+  max_length: 4096
+
+# ──────────────────────────────────────────────
+# Observation space
+# ──────────────────────────────────────────────
+observation_space:
+  type: object
+  fields:
+    task_id:
+      type: string
+      description: Active task identifier (easy, medium, hard)
+    task_description:
+      type: string
+      description: Natural language description of the task
+    step:
+      type: integer
+      description: Current step number (0 = just reset)
+    max_steps:
+      type: integer
+      description: Maximum allowed steps for this episode
+    ledger:
+      type: array
+      items: object
+      description: >
+        List of ledger entries, each with id, value, expected_value,
+        and dependencies (may be hidden in hard mode)
+    errors:
+      type: array
+      items: object
+      description: >
+        List of current errors where value != expected_value.
+        Each error includes entry_id, current_value, expected_value, delta.
+    remaining_budget:
+      type: integer
+      description: Remaining action budget
+    initial_budget:
+      type: integer
+      description: Starting budget for this task
+    done:
+      type: boolean
+      description: Whether the episode has ended
+    echoed_message:
+      type: string
+      description: Echo of the last agent message (OpenEnv compatibility)
+    last_action_result:
+      type: string
+      nullable: true
+      description: Human-readable result of the last action
+    last_action_error:
+      type: string
+      nullable: true
+      description: Error message if last action failed
+    context:
+      type: object
+      description: Task-specific context (action types, cost info)
+
+# ──────────────────────────────────────────────
+# Reward
+# ──────────────────────────────────────────────
+reward:
+  range: [0.0, 1.0]
+  type: float
+  description: >
+    Final score computed deterministically as:
+    score = 0.5 * consistency_score + 0.3 * efficiency_score
+            + 0.2 * budget_remaining_ratio - overcorrection_penalty
+    Where consistency_score = correct_entries / total_entries,
+    efficiency_score = optimal_steps / actual_steps,
+    budget_remaining_ratio = remaining_budget / initial_budget.
+    Clamped to [0.0, 1.0]. No randomness.
+  partial_progress: true
+
+# ──────────────────────────────────────────────
+# Tasks
+# ──────────────────────────────────────────────
+tasks:
+  - id: easy
+    name: Easy Ledger Repair
+    difficulty: easy
+    max_steps: 10
+    description: >
+      Repair a financial ledger with 5 independent entries containing 3 errors.
+      No dependencies between entries. Generous budget of 10 actions.
+    grading:
+      - criterion: All errors fixed (consistency = 1.0)
+        weight: 0.50
+        deterministic: true
+      - criterion: Efficiency (optimal actions used)
+        weight: 0.30
+        deterministic: true
+      - criterion: Budget remaining ratio
+        weight: 0.20
+        deterministic: true
+
+  - id: medium
+    name: Medium Ledger Repair
+    difficulty: medium
+    max_steps: 15
+    description: >
+      Repair a financial ledger with 8 entries and visible dependencies.
+      Fixing certain entries cascades changes to dependent entries.
+      Moderate budget of 12 actions.
+    grading:
+      - criterion: All errors fixed (consistency)
+        weight: 0.50
+        deterministic: true
+      - criterion: Efficiency (optimal path)
+        weight: 0.30
+        deterministic: true
+      - criterion: Budget remaining
+        weight: 0.20
+        deterministic: true
+
+  - id: hard
+    name: Hard Ledger Repair
+    difficulty: hard
+    max_steps: 12
+    description: >
+      Repair a complex ledger with 10 entries and HIDDEN dependencies.
+      Dependencies are not visible in observations. Fixing entries causes
+      cascading changes. Tight budget of 8 actions. Overcorrection is penalized.
+    grading:
+      - criterion: Consistency score
+        weight: 0.50
+        deterministic: true
+      - criterion: Efficiency score
+        weight: 0.30
+        deterministic: true
+      - criterion: Budget remaining ratio
+        weight: 0.20
+        deterministic: true
+      - criterion: Overcorrection penalty
+        weight: -0.05
+        deterministic: true
+
+# ──────────────────────────────────────────────
+# Baseline scores
+# ──────────────────────────────────────────────
+baseline:
+  model: Qwen/Qwen2.5-72B-Instruct
+  scores:
+    easy:   0.90
+    medium: 0.70
+    hard:   0.55
+  notes: >
+    Scores achieved by the baseline inference.py using tool-augmented
+    chain-of-thought with iterative ledger repair strategy.
+
+# ──────────────────────────────────────────────
+# Infrastructure
+# ──────────────────────────────────────────────
+infrastructure:
+  runtime: docker
+  base_image: python:3.10-slim
+  port: 7860
+  health_check: GET /health
+  max_runtime_minutes: 20
+  memory_gb: 8
+  vcpus: 2
